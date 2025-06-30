@@ -1,0 +1,79 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>com.thanhnguyen.git.format</id>
+    <name>Apero Git Format</name>
+    <vendor email="thanhnguyen6702@gmail.com" url="https://github.com/Thanhnguyen6702/PluginGitFormat">Thanh Nguyen</vendor>
+
+    <description><![CDATA[
+        <h3>Git Format - Professional Git Commit Message Formatter</h3>
+        
+        <p>A powerful IntelliJ IDEA plugin that helps developers create professional, well-formatted Git commit messages and streamline their Git workflow.</p>
+        
+        <h4>Key Features:</h4>
+        <ul>
+            <li><strong>Smart Commit Formatting:</strong> Automatically format commit messages following conventional commits standard</li>
+            <li><strong>Issue Integration:</strong> Seamlessly integrate with JIRA and other issue tracking systems</li>
+            <li><strong>Real-time Preview:</strong> See your formatted commit message in real-time as you type</li>
+            <li><strong>Input Validation:</strong> Ensure your commit messages meet quality standards</li>
+            <li><strong>Keyboard Navigation:</strong> Efficient navigation between fields with Enter key support</li>
+            <li><strong>Project Prefix Support:</strong> Automatically add project-specific prefixes to commits</li>
+            <li><strong>Pull Request Integration:</strong> Quick pull request creation with advanced integration</li>
+        </ul>
+        
+        <h4>Benefits:</h4>
+        <ul>
+            <li>Maintain consistent commit message format across your team</li>
+            <li>Improve code review efficiency with clear, descriptive commits</li>
+            <li>Better project history and easier debugging</li>
+            <li>Professional Git workflow for development teams</li>
+        </ul>
+        
+        <p>Perfect for teams who want to maintain high-quality Git history and improve their development workflow.</p>
+    ]]></description>
+
+
+    <!-- Require IntelliJ IDEA 2024.2+ -->
+    <idea-version since-build="242" until-build="252.*"/>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
+    <depends>Git4Idea</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Settings Configuration -->
+        <applicationConfigurable parentId="tools"
+                                 id="git.commit.message"
+                                 instance="com.thanhnguyen.git.format.settings.GitSettingsConfigurable"
+                                 displayName="Git Format Settings"/>
+        <applicationService serviceImplementation="com.thanhnguyen.git.format.settings.GitSettings"/>
+        
+        <!-- Services -->
+        <projectService serviceImplementation="com.thanhnguyen.git.format.service.GitBranchService"/>
+        <projectService serviceImplementation="com.thanhnguyen.git.format.service.GitHubService"/>
+        <projectService serviceImplementation="com.thanhnguyen.git.format.service.JiraService"/>
+        
+        <!-- Notification Group -->
+        <notificationGroup id="Git Format" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <!-- Git Format Action -->
+        <action id="CreateCommitAction" 
+                class="com.thanhnguyen.git.format.action.CreateCommitAction"
+                text="Create Formatted Commit"
+                description="Create beautifully formatted commit message"
+                icon="AllIcons.Vcs.CommitNode">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt Q"/>
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="first"/>
+        </action>
+
+        <!-- Pull Request Action -->
+        <action id="CreatePullRequestActionIntegration" 
+                class="com.thanhnguyen.git.format.action.CreatePullRequestAction"
+                text="Create Pull Request"
+                description="Create pull request with advanced integration"
+                icon="AllIcons.Vcs.Push">
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>
