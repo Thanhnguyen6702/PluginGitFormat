@@ -31,8 +31,6 @@ import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
-
-
 class PullRequestDialog(
     private val project: Project,
     private val defaultTitle: String
@@ -76,6 +74,30 @@ class PullRequestDialog(
         init()
     }
     
+    // Hiển thị TemplateSetupDialog và refresh lại sau khi setup
+    private fun showTemplateSetupDialog() {
+        val dialog = TemplateSetupDialog(project)
+        dialog.show()
+        // Sau khi đóng dialog setup template thì refresh lại toàn bộ UI và reload danh sách templates
+        SwingUtilities.invokeLater {
+            // Refresh templates and rebind combo box & preview
+            // Force re-initialize templates list (workaround since field is val)
+            val updatedTemplates = templateService.getAvailableTemplates(project)
+            // Gán lại items cho combo box nếu đã initialized
+            if (::templateComboBox.isInitialized) {
+                val comboBoxModel = DefaultComboBoxModel(updatedTemplates.toTypedArray())
+                templateComboBox.model = comboBoxModel
+                if (updatedTemplates.isNotEmpty()) {
+                    templateComboBox.selectedIndex = 0
+                }
+            }
+            // Force preview update
+            updatePreview()
+            // Force dialog to layout again for new controls
+            refreshAll()
+        }
+    }
+    
     override fun createCenterPanel(): JComponent {
         return panel {
             group("Pull Request Information") {
@@ -97,7 +119,7 @@ class PullRequestDialog(
                         }
                         .component
                 }
-                
+
                 row("Base Branch:") {
                     baseBranchComboBox = comboBox(branches)
                         .applyToComponent {
@@ -105,7 +127,7 @@ class PullRequestDialog(
                         }
                         .component
                 }
-                
+
                 row("Template:") {
                     templateComboBox = comboBox(templates)
                         .applyToComponent {
@@ -121,14 +143,20 @@ class PullRequestDialog(
                                     return this
                                 }
                             }
-                            
+
                             addActionListener {
                                 updatePreview()
                             }
                         }
                         .component
+                    // Nếu không có template, hiển thị button setup
+                    if (templates.isEmpty()) {
+                        button("⚙️ Setup Templates") {
+                            showTemplateSetupDialog()
+                        }
+                    }
                 }
-                
+
                 row("Estimate Time:") {
                     estimateTimeField = textField()
                         .columns(20)
@@ -145,7 +173,7 @@ class PullRequestDialog(
                         }
                         .component
                 }
-                
+
                 row("Actual Time:") {
                     actualTimeField = textField()
                         .columns(20)
@@ -163,7 +191,21 @@ class PullRequestDialog(
                         .component
                 }
             }
-            
+
+            // Hiển thị thông báo khi không có template
+            if (templates.isEmpty()) {
+                group("Template Configuration") {
+                    row {
+                        label("⚠️ Chưa có PR template trong project").apply {
+                            component.font = component.font.deriveFont(14f)
+                        }
+                    }
+                    row {
+                        comment("Bấm 'Setup Templates' để tạo template cho project của bạn")
+                    }
+                }
+            }
+
             group("Integration Status") {
                 row {
                     statusLabel = label(getStatusText()).component
@@ -177,7 +219,7 @@ class PullRequestDialog(
                     }
                 }
             }
-            
+
             group("Pull Request Preview") {
                 row {
                     scrollCell(JTextArea().apply {
@@ -279,8 +321,6 @@ class PullRequestDialog(
         }
     }
     
-
-
     private fun formatPullRequestContent(title: String, estimateTime: String, actualTime: String): String {
         val selectedTemplate = if (::templateComboBox.isInitialized) {
             templateComboBox.selectedItem as? PullRequestTemplateService.Template
@@ -393,6 +433,7 @@ class PullRequestDialog(
 
         return result
     }
+    
     private fun getDefaultFormattedContent(title: String, estimateTime: String, actualTime: String): String {
         val ticketKey = if (title.isNotBlank()) {
             jiraService.extractTicketKey(title)
@@ -765,4 +806,4 @@ class PullRequestDialog(
         timer.isRepeats = false
         timer.start()
     }
-} 
+}
