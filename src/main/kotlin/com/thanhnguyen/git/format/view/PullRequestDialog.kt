@@ -6,6 +6,7 @@ import com.thanhnguyen.git.format.service.GitHubService
 import com.thanhnguyen.git.format.service.JiraService
 import com.thanhnguyen.git.format.settings.GitSettings
 import com.thanhnguyen.git.format.settings.GitSettingsConfigurable
+import com.thanhnguyen.git.format.util.TimeParser
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.diagnostic.Logger
@@ -308,14 +309,14 @@ class PullRequestDialog(
 
     private fun enhanceTemplateWithTimeAndTicket(templateContent: String, title: String, estimateTime: String, actualTime: String): String {
         var result = templateContent
-        
+
         val patterns = listOf(
             "\\[([A-Z]+\\d+-\\d+)\\]",
             "\\[([A-Z]+-\\d+)\\]",
             "([A-Z]+\\d+-\\d+)",
             "([A-Z]+-\\d+)"
         )
-        
+
         var fullTicket: String? = null
         for (pattern in patterns) {
             val regex = Regex(pattern)
@@ -325,24 +326,29 @@ class PullRequestDialog(
                 break
             }
         }
-        
+
         if (fullTicket != null && fullTicket.isNotBlank()) {
             val projectPrefix = fullTicket.substringBefore("-")
             val hardcodedProjects = Regex("\\[([A-Z]+\\d*)-\\]").findAll(result).map { it.groupValues[1] }.distinct()
-            
+
             for (hardcodedProject in hardcodedProjects) {
                 result = result.replace("[$hardcodedProject-]", "[$projectPrefix-]")
                 result = result.replace("browse/$hardcodedProject-", "browse/$projectPrefix-")
             }
-            
+
             result = result.replace("[$projectPrefix-]", "[$fullTicket]")
             result = result.replace("browse/$projectPrefix-", "browse/$fullTicket")
         }
+
+        // 2. Handle time sections using TimeParser for proper formatting
+        val estimateText = if (estimateTime.isNotBlank()) {
+            TimeParser.validateAndFormat(estimateTime) ?: "${estimateTime}m"
+        } else ""
         
-        // 2. Handle time sections in proper order: Estimate → Actual → Check list
-        val estimateText = if (estimateTime.isNotBlank()) "${estimateTime}m" else ""
-        val actualText = if (actualTime.isNotBlank()) "${actualTime}m" else ""
-        
+        val actualText = if (actualTime.isNotBlank()) {
+            TimeParser.validateAndFormat(actualTime) ?: "${actualTime}m"
+        } else ""
+
         // First handle Estimate Time
         if (result.contains("# Estimate Time:", ignoreCase = true)) {
             // Template has estimate section, fill it
@@ -350,7 +356,7 @@ class PullRequestDialog(
                 result = result.replace(Regex("# Estimate Time:.*"), "# Estimate time: $estimateText")
             }
         }
-        
+
         // Then handle Actual Time
         if (result.contains("# Actual Time:", ignoreCase = true)) {
             // Template has actual section, fill it
@@ -358,7 +364,7 @@ class PullRequestDialog(
                 result = result.replace(Regex("# Actual Time:.*"), "# Actual Time: $actualText")
             }
         }
-        
+
         // Now add missing sections in correct order
         if (!result.contains("# Estimate Time:", ignoreCase = true) && estimateText.isNotBlank()) {
             // Find where to insert estimate time (before actual time or check list)
@@ -373,7 +379,7 @@ class PullRequestDialog(
                 result += "\n# Estimate time: $estimateText"
             }
         }
-        
+
         if (!result.contains("# Actual Time:", ignoreCase = true) && actualText.isNotBlank()) {
             // Find where to insert actual time (after estimate time, before check list)
             if (result.contains("# Check list", ignoreCase = true)) {
@@ -384,26 +390,30 @@ class PullRequestDialog(
                 result += "\n# Actual Time: $actualText"
             }
         }
-        
+
         return result
     }
     private fun getDefaultFormattedContent(title: String, estimateTime: String, actualTime: String): String {
         val ticketKey = if (title.isNotBlank()) {
             jiraService.extractTicketKey(title)
         } else null
-        
+
         val resolvedTicketsSection = if (ticketKey != null && ticketKey.isNotBlank()) {
             "# Resolved tickets\n- [$ticketKey](https://apero.atlassian.net/browse/$ticketKey)"
         } else {
             "# Resolved tickets\n- [TICKET-KEY](https://apero.atlassian.net/browse/TICKET-KEY)"
         }
-        
-        val estimateText = estimateTime.ifBlank { "0" }
-        val actualText = actualTime.ifBlank { "0" }
-        
+
+        val estimateText = if (estimateTime.isNotBlank()) {
+            TimeParser.validateAndFormat(estimateTime) ?: "${estimateTime}m"
+        } else "0m"
+        val actualText = if (actualTime.isNotBlank()) {
+            TimeParser.validateAndFormat(actualTime) ?: "${actualTime}m"
+        } else "0m"
+
         return """$resolvedTicketsSection
-# Estimate time: ${estimateText}m
-# Actual Time: ${actualText}m
+# Estimate time: $estimateText
+# Actual Time: $actualText
 # Check list
 - [ ] Copy/paste PR link into issued tickets""".trimIndent()
     }
@@ -577,7 +587,11 @@ class PullRequestDialog(
         if (ticketKey != null) {
             jiraService.commentOnTicket(ticketKey, pullRequestUrl)
             
-            val actualMinutes = actualTime.toIntOrNull()
+            // Use TimeParser to convert actualTime to minutes for JIRA logging
+            val actualMinutes = if (actualTime.isNotBlank()) {
+                TimeParser.parseToMinutes(actualTime)
+            } else null
+            
             if (actualMinutes != null && actualMinutes > 0) {
                 jiraService.logWork(
                     ticketKey, 
@@ -646,9 +660,11 @@ class PullRequestDialog(
                                 text("✅ PR link đã được comment vào JIRA")
                             }
                             
-                            if (actualTime.isNotBlank() && actualTime.toIntOrNull() != null) {
+                            if (actualTime.isNotBlank() && TimeParser.parseToMinutes(actualTime) != null) {
+                                val actualMinutes = TimeParser.parseToMinutes(actualTime)!!
+                                val formattedTime = TimeParser.formatMinutes(actualMinutes)
                                 row("⏰ Work Log:") {
-                                    text("✅ Đã log ${actualTime} phút vào JIRA")
+                                    text("✅ Đã log $formattedTime ($actualMinutes phút) vào JIRA")
                                 }
                             }
                         }
