@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.0.3] - 2025-08-08
+
+### Added
+
+- **Auto-Assignee Feature**: Automatic assignment of pull requests to yourself with checkbox option
+- **Labels Support**: Choose from default labels (bug, feature, AI Gen) or create custom labels
+- **Enhanced PR Creation**: Better GitHub API integration with assignees and labels support
+- **User Authentication**: Get current GitHub user for auto-assignment feature
+- **Improved Success Dialog**: Display assigned users and labels in PR success notification
+
+### Improved
+
+- **GitHub API Integration**: Enhanced error handling and redirect support for more reliable API calls
+- **Pull Request Dialog**: Better UI layout with labels panel and assignee options
+- **Logging**: More detailed logging for debugging GitHub API interactions
+
+### Fixed
+
+- **HTTP 307 Redirects**: Proper handling of GitHub API redirects
+- **API Timeout**: Increased timeout values for better reliability
+
 ## [0.0.2] - 2025-07-05
 
 ### Added
