@@ -8,12 +8,17 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.time.Duration
 
 @Service(Service.Level.PROJECT)
 class GitHubService(private val project: Project) {
 
     private val logger = Logger.getInstance(GitHubService::class.java)
-    private val httpClient = HttpClient.newHttpClient()
+    // Configure HTTP client to follow redirects automatically and increase timeout
+    private val httpClient = HttpClient.newBuilder()
+        .followRedirects(HttpClient.Redirect.NORMAL)
+        .connectTimeout(Duration.ofSeconds(30))
+        .build()
     private val settings = GitSettings.instance
 
     data class PullRequestResult(
@@ -31,7 +36,9 @@ class GitHubService(private val project: Project) {
         title: String,
         body: String,
         headBranch: String,
-        baseBranch: String
+        baseBranch: String,
+        assignees: List<String> = emptyList(),
+        labels: List<String> = emptyList()
     ): PullRequestResult {
         if (!settings.isGitHubConfigured()) {
             return PullRequestResult(false, error = "GitHub token chưa được cấu hình")
@@ -46,17 +53,42 @@ class GitHubService(private val project: Project) {
             val escapedHead = escapeJsonString(headBranch)
             val escapedBase = escapeJsonString(baseBranch)
             
-            val requestBody = """
-                {
-                    "title": "$escapedTitle",
-                    "body": "$escapedBody",
-                    "head": "$escapedHead",
-                    "base": "$escapedBase"
+            // Build assignees and labels JSON arrays
+            val assigneesJson = if (assignees.isNotEmpty()) {
+                assignees.joinToString(",") { "\"${escapeJsonString(it)}\"" }
+            } else ""
+            
+            val labelsJson = if (labels.isNotEmpty()) {
+                labels.joinToString(",") { "\"${escapeJsonString(it)}\"" }
+            } else ""
+            
+            val requestBody = buildString {
+                append("{\n")
+                append("    \"title\": \"$escapedTitle\",\n")
+                append("    \"body\": \"$escapedBody\",\n")
+                append("    \"head\": \"$escapedHead\",\n")
+                append("    \"base\": \"$escapedBase\"")
+                
+                if (assigneesJson.isNotEmpty()) {
+                    append(",\n    \"assignees\": [$assigneesJson]")
                 }
-            """.trimIndent()
+                
+                if (labelsJson.isNotEmpty()) {
+                    append(",\n    \"labels\": [$labelsJson]")
+                }
+                
+                append("\n}")
+            }
 
-            logger.info("🚀 Creating PR: $url")
-            logger.info("📋 Request body: $requestBody")
+            logger.info("🚀 Creating PR for repo: $owner/$repo")
+            logger.info("📋 URL: $url")
+            logger.info("📄 Head: $headBranch -> Base: $baseBranch")
+            if (assignees.isNotEmpty()) {
+                logger.info("👤 Assignees: ${assignees.joinToString(", ")}")
+            }
+            if (labels.isNotEmpty()) {
+                logger.info("🏷️ Labels: ${labels.joinToString(", ")}")
+            }
 
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -64,13 +96,21 @@ class GitHubService(private val project: Project) {
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "IntelliJ-Plugin-GitCommitFormat/2.2.0")
+                .timeout(Duration.ofSeconds(60))
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                 .build()
 
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
             
-            logger.info("📤 Response: ${response.statusCode()}")
-            logger.info("📄 Response body: ${response.body()}")
+            logger.info("📤 Response Status: ${response.statusCode()}")
+            logger.info("🌐 Final URL: ${response.uri()}")
+            
+            // Log response headers for debugging redirects
+            response.headers().map().forEach { (key, values) ->
+                if (key.lowercase().contains("location") || key.lowercase().contains("redirect")) {
+                    logger.info("📍 Header $key: ${values.joinToString(", ")}")
+                }
+            }
             
             when (response.statusCode()) {
                 201 -> {
@@ -81,10 +121,19 @@ class GitHubService(private val project: Project) {
                     PullRequestResult(true, pullRequestUrl)
                 }
                 422 -> {
+                    logger.warn("⚠️ Pull Request conflict: ${response.body()}")
                     PullRequestResult(false, error = "Pull Request đã tồn tại hoặc không có thay đổi nào để merge")
                 }
+                307, 308 -> {
+                    // Handle redirect responses explicitly
+                    val locationHeader = response.headers().firstValue("Location").orElse(null)
+                    logger.error("🔄 Redirect response ${response.statusCode()}: Location = $locationHeader")
+                    logger.error("📄 Response body: ${response.body()}")
+                    PullRequestResult(false, error = "Redirect error ${response.statusCode()}: ${response.body()}")
+                }
                 else -> {
-                    logger.error("❌ Lỗi tạo Pull Request: ${response.statusCode()} - ${response.body()}")
+                    logger.error("❌ Lỗi tạo Pull Request: ${response.statusCode()}")
+                    logger.error("📄 Response body: ${response.body()}")
                     PullRequestResult(false, error = "HTTP ${response.statusCode()}: ${response.body()}")
                 }
             }
@@ -99,6 +148,8 @@ class GitHubService(private val project: Project) {
      */
     fun parseRepositoryInfo(remoteUrl: String): Pair<String, String>? {
         return try {
+            logger.info("🔍 Parsing repository info from: $remoteUrl")
+            
             // Patterns: 
             // https://github.com/owner/repo.git
             // git@github.com:owner/repo.git
@@ -106,16 +157,23 @@ class GitHubService(private val project: Project) {
             val sshPattern = Regex("git@github\\.com:([^/]+)/([^/]+?)(?:\\.git)?$")
             
             httpsPattern.find(remoteUrl)?.let { match ->
-                return Pair(match.groupValues[1], match.groupValues[2])
+                val owner = match.groupValues[1]
+                val repo = match.groupValues[2]
+                logger.info("✅ Parsed HTTPS format: owner=$owner, repo=$repo")
+                return Pair(owner, repo)
             }
             
             sshPattern.find(remoteUrl)?.let { match ->
-                return Pair(match.groupValues[1], match.groupValues[2])
+                val owner = match.groupValues[1]
+                val repo = match.groupValues[2]
+                logger.info("✅ Parsed SSH format: owner=$owner, repo=$repo")
+                return Pair(owner, repo)
             }
             
+            logger.warn("❌ Could not parse repository info from URL: $remoteUrl")
             null
         } catch (e: Exception) {
-            logger.error("Không thể parse repository info từ: $remoteUrl", e)
+            logger.error("💥 Không thể parse repository info từ: $remoteUrl", e)
             null
         }
     }
@@ -131,18 +189,34 @@ class GitHubService(private val project: Project) {
         return try {
             val url = "https://api.github.com/repos/$owner/$repo"
             
+            logger.info("🔍 Checking repository access: $owner/$repo")
+            
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Authorization", "Bearer ${settings.githubToken}")
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "IntelliJ-Plugin-GitCommitFormat/2.2.0")
+                .timeout(Duration.ofSeconds(30))
                 .GET()
                 .build()
 
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
-            response.statusCode() == 200
+            
+            logger.info("🔍 Repository check response: ${response.statusCode()}")
+            
+            when (response.statusCode()) {
+                200 -> true
+                307, 308 -> {
+                    logger.warn("🔄 Repository check redirect ${response.statusCode()}")
+                    false
+                }
+                else -> {
+                    logger.warn("❌ Repository access denied or not found: ${response.statusCode()}")
+                    false
+                }
+            }
         } catch (e: Exception) {
-            logger.error("Exception khi kiểm tra repository access: ${e.message}", e)
+            logger.error("💥 Exception khi kiểm tra repository access: ${e.message}", e)
             false
         }
     }
@@ -154,6 +228,61 @@ class GitHubService(private val project: Project) {
             pattern.find(responseBody)?.groupValues?.get(1)
         } catch (e: Exception) {
             logger.error("Không thể extract Pull Request URL từ response", e)
+            null
+        }
+    }
+
+    /**
+     * Lấy username của user hiện tại (authenticated user)
+     */
+    fun getCurrentUser(): String? {
+        if (!settings.isGitHubConfigured()) {
+            return null
+        }
+
+        return try {
+            val url = "https://api.github.com/user"
+
+            logger.info("🔍 Getting current authenticated user")
+
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Authorization", "Bearer ${settings.githubToken}")
+                .header("Accept", "application/vnd.github.v3+json")
+                .header("User-Agent", "IntelliJ-Plugin-GitCommitFormat/2.2.0")
+                .timeout(Duration.ofSeconds(30))
+                .GET()
+                .build()
+
+            val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+
+            logger.info("🔍 User check response: ${response.statusCode()}")
+
+            when (response.statusCode()) {
+                200 -> {
+                    val responseBody = response.body()
+                    val username = extractUsername(responseBody)
+                    logger.info("✅ Current user: $username")
+                    username
+                }
+                else -> {
+                    logger.warn("❌ Failed to get current user: ${response.statusCode()}")
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            logger.error("💥 Exception khi lấy current user: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun extractUsername(responseBody: String): String? {
+        return try {
+            // Simple regex to extract "login" from JSON response
+            val pattern = Regex("\"login\"\\s*:\\s*\"([^\"]+)\"")
+            pattern.find(responseBody)?.groupValues?.get(1)
+        } catch (e: Exception) {
+            logger.error("Không thể extract username từ response", e)
             null
         }
     }

@@ -1,5 +1,6 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
+    <version>0.0.3</version>
     <id>com.thanhnguyen.git.format</id>
     <name>Apero Git Format</name>
     <vendor email="thanhnguyen6702@gmail.com" url="https://github.com/Thanhnguyen6702/PluginGitFormat">Thanh Nguyen</vendor>

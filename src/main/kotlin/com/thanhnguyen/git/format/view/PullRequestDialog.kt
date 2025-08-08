@@ -28,6 +28,8 @@ import java.awt.Font
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import javax.swing.*
+import javax.swing.BoxLayout
+import javax.swing.Box
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
@@ -50,6 +52,13 @@ class PullRequestDialog(
     private lateinit var baseBranchComboBox: JComboBox<String>
     private lateinit var previewArea: JTextArea
     private lateinit var statusLabel: JLabel
+    private lateinit var autoAssignCheckBox: JCheckBox
+    private lateinit var labelsPanel: JPanel
+    private lateinit var customLabelField: JTextField
+
+    // Default labels
+    private val defaultLabels = listOf("bug", "feature", "AI Gen")
+    private val labelCheckBoxes = mutableMapOf<String, JCheckBox>()
 
     private val templates = templateService.getAvailableTemplates(project)
     private val branches = branchService.getRemoteBranches().ifEmpty { 
@@ -155,6 +164,40 @@ class PullRequestDialog(
                             showTemplateSetupDialog()
                         }
                     }
+                }
+
+                row("Labels:") {
+                    labelsPanel = JPanel().apply {
+                        layout = BoxLayout(this, BoxLayout.X_AXIS)
+                        // Default label checkboxes
+                        defaultLabels.forEach { label ->
+                            val checkBox = JCheckBox(label)
+                            labelCheckBoxes[label] = checkBox
+                            add(checkBox)
+                        }
+                        // Custom label field and "+" button
+                        customLabelField = JTextField(8)
+                        val addButton = JButton("+")
+                        addButton.addActionListener {
+                            val label = customLabelField.text.trim()
+                            if (label.isNotEmpty() && !labelCheckBoxes.containsKey(label)) {
+                                val cb = JCheckBox(label)
+                                labelCheckBoxes[label] = cb
+                                add(cb, componentCount - 2) // before custom field and add btn
+                                revalidate()
+                                repaint()
+                                customLabelField.text = ""
+                            }
+                        }
+                        add(Box.createHorizontalStrut(8))
+                        add(customLabelField)
+                        add(addButton)
+                    }
+                    cell(labelsPanel).align(Align.FILL)
+                }
+
+                row {
+                    autoAssignCheckBox = checkBox("Assign pull request to me").selected(true).component
                 }
 
                 row("Estimate Time:") {
@@ -488,6 +531,12 @@ class PullRequestDialog(
         val actualTime = actualTimeField.text.trim()
         val baseBranch = baseBranchComboBox.selectedItem as String
         val selectedTemplate = templateComboBox.selectedItem as? PullRequestTemplateService.Template
+
+        // Get selected labels and assignees
+        val selectedLabels = labelCheckBoxes.entries.filter { it.value.isSelected }.map { it.key }
+        val assignees = if (::autoAssignCheckBox.isInitialized && autoAssignCheckBox.isSelected) {
+            listOfNotNull(githubService.getCurrentUser())
+        } else emptyList()
         
         setLoadingState()
         
@@ -495,13 +544,23 @@ class PullRequestDialog(
             override fun run(indicator: ProgressIndicator) {
                 try {
                     indicator.text = "Creating Pull Request..."
-                    val result = createPullRequestWithJiraIntegration(selectedTemplate, title, baseBranch, estimateTime, actualTime)
+                    val result = createPullRequestWithJiraIntegration(
+                        selectedTemplate, title, baseBranch, estimateTime, actualTime, assignees, selectedLabels
+                    )
                     
                     SwingUtilities.invokeLater {
                         resetButtonState()
                         if (result != null) {
                             val (pullRequestUrl, ticketKey, currentBranch) = result
-                            showSuccessDialog(pullRequestUrl, ticketKey, currentBranch, baseBranch, actualTime)
+                            showSuccessDialog(
+                                pullRequestUrl = pullRequestUrl,
+                                ticketKey = ticketKey,
+                                currentBranch = currentBranch,
+                                baseBranch = baseBranch,
+                                actualTime = actualTime,
+                                assignees = assignees,
+                                labels = selectedLabels
+                            )
                         }
                         super@PullRequestDialog.doOKAction()
                     }
@@ -533,8 +592,10 @@ class PullRequestDialog(
         selectedTemplate: PullRequestTemplateService.Template?,
         title: String,
         baseBranch: String,
-        estimateTime: String, 
-        actualTime: String
+        estimateTime: String,
+        actualTime: String,
+        assignees: List<String>,
+        selectedLabels: List<String>
     ): Triple<String, String?, String>? {
         // Read git repository info on EDT
         val repoData = ReadAction.compute<Triple<String, String, String>, RuntimeException> {
@@ -570,22 +631,24 @@ class PullRequestDialog(
         } else {
             formatPullRequestContent(title, estimateTime, actualTime)
         }
-        
+
         val prResult = githubService.createPullRequest(
             owner = owner,
             repo = repoName,
             title = title,
             body = pullRequestBody,
             headBranch = currentBranch,
-            baseBranch = baseBranch
+            baseBranch = baseBranch,
+            assignees = assignees,
+            labels = selectedLabels
         )
-        
+
         if (prResult.success && prResult.pullRequestUrl != null) {
             // PR created successfully, now handle JIRA integration
             val ticketKey = handleJiraIntegration(title, currentBranch, prResult.pullRequestUrl, actualTime)
-            
+
             return Triple(prResult.pullRequestUrl, ticketKey, currentBranch)
-            
+
         } else {
             throw RuntimeException("Lỗi tạo Pull Request: ${prResult.error}")
         }
@@ -645,16 +708,24 @@ class PullRequestDialog(
         return ticketKey
     }
     
-    private fun showSuccessDialog(pullRequestUrl: String, ticketKey: String?, currentBranch: String, baseBranch: String, actualTime: String) {
+    private fun showSuccessDialog(
+        pullRequestUrl: String,
+        ticketKey: String?,
+        currentBranch: String,
+        baseBranch: String,
+        actualTime: String,
+        assignees: List<String> = emptyList(),
+        labels: List<String> = emptyList()
+    ) {
         val jiraUrl = if (ticketKey != null) "https://apero.atlassian.net/browse/$ticketKey" else null
-        
+
         val dialog = object : DialogWrapper(project) {
             init {
                 title = "Pull Request Created Successfully"
                 setOKButtonText("Close")
                 init()
             }
-            
+
             override fun createCenterPanel(): JComponent {
                 return panel {
                     row {
@@ -662,13 +733,13 @@ class PullRequestDialog(
                             component.font = component.font.deriveFont(16f)
                         }
                     }
-                    
+
                     separator()
-                    
+
                     group("Pull Request Information") {
                         row("📋 URL:") {
                             text(pullRequestUrl)
-                                .applyToComponent { 
+                                .applyToComponent {
                                     toolTipText = pullRequestUrl
                                 }
                             button("📋 Copy") {
@@ -676,12 +747,24 @@ class PullRequestDialog(
                                 showNotification("PR URL copied to clipboard!")
                             }
                         }
-                        
+
                         row("🌿 Branch:") {
                             text("$currentBranch → $baseBranch")
                         }
+
+                        if (assignees.isNotEmpty()) {
+                            row("👤 Assignees:") {
+                                text(assignees.joinToString(", "))
+                            }
+                        }
+
+                        if (labels.isNotEmpty()) {
+                            row("🏷️ Labels:") {
+                                text(labels.joinToString(", "))
+                            }
+                        }
                     }
-                    
+
                     if (ticketKey != null && settings.isJiraConfigured()) {
                         group("JIRA Integration") {
                             row("🎫 Ticket:") {
@@ -696,11 +779,11 @@ class PullRequestDialog(
                                     }
                                 }
                             }
-                            
+
                             row("💬 Status:") {
                                 text("✅ PR link đã được comment vào JIRA")
                             }
-                            
+
                             if (actualTime.isNotBlank() && TimeParser.parseToMinutes(actualTime) != null) {
                                 val actualMinutes = TimeParser.parseToMinutes(actualTime)!!
                                 val formattedTime = TimeParser.formatMinutes(actualMinutes)
@@ -725,7 +808,7 @@ class PullRequestDialog(
                 }
             }
         }
-        
+
         dialog.show()
     }
     
